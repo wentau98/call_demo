@@ -122,13 +122,15 @@ final class WebRTCClient: NSObject {
         let pc = factory.peerConnection(with: config, constraints: constraints, delegate: self)
         self.peerConnection = pc
 
-        // 添加本地 track
+        // 添加本地 track（通过 RTCMediaStream，stasel/WebRTC 不支持 addTransceiver）
+        let mediaStream = factory.mediaStream(withStreamId: "ARDAMS")
         if let audio = localAudioTrack {
-            pc.addTransceiver(with: audio)
+            mediaStream.addAudioTrack(audio)
         }
         if let video = localVideoTrack {
-            pc.addTransceiver(with: video)
+            mediaStream.addVideoTrack(video)
         }
+        pc.add(mediaStream)
     }
 
     // MARK: - 协商
