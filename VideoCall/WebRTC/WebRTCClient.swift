@@ -3,7 +3,7 @@ import WebRTC
 import AVFoundation
 
 /// WebRTC 客户端：封装 RTCPeerConnectionFactory、本地音视频采集、PeerConnection 协商。
-/// 参考实现：https://github.com/stasel/WebRTC-iOS
+/// 基于 stasel/WebRTC M150 API，参考官方 demo：https://github.com/stasel/WebRTC-iOS
 final class WebRTCClient: NSObject {
 
     // MARK: - 回调
@@ -14,8 +14,16 @@ final class WebRTCClient: NSObject {
     var onRemoteVideoTrack: ((RTCVideoTrack) -> Void)?
     var onRemoteAudioTrack: ((RTCAudioTrack) -> Void)?
 
+    // MARK: - 共享 Factory（M150 要求使用 encoder/decoder factory）
+    private static let factory: RTCPeerConnectionFactory = {
+        RTCInitializeSSL()
+        let videoEncoderFactory = RTCDefaultVideoEncoderFactory()
+        let videoDecoderFactory = RTCDefaultVideoDecoderFactory()
+        return RTCPeerConnectionFactory(encoderFactory: videoEncoderFactory,
+                                        decoderFactory: videoDecoderFactory)
+    }()
+
     // MARK: - 内部
-    private let factory: RTCPeerConnectionFactory
     private var peerConnection: RTCPeerConnection?
     private var videoCapturer: RTCVideoCapturer?
     private var localVideoTrack: RTCVideoTrack?
@@ -26,16 +34,8 @@ final class WebRTCClient: NSObject {
     private(set) var isAudioEnabled = true
     private let enableVideo: Bool
 
-    static var isInitialized = false
-
     init(enableVideo: Bool) {
         self.enableVideo = enableVideo
-        // 全局初始化（仅一次）
-        if !WebRTCClient.isInitialized {
-            RTCInitializeSSL()
-            WebRTCClient.isInitialized = true
-        }
-        self.factory = RTCPeerConnectionFactory()
         super.init()
     }
 
@@ -43,12 +43,11 @@ final class WebRTCClient: NSObject {
 
     func startLocalMedia() {
         configureAudioSession()
+
         // 音频
-        let audioConstraints = RTCMediaConstraints(mandatoryConstraints: [
-            kRTCMediaConstraintsLevelControl: "true"
-        ], optionalConstraints: nil)
-        let audioSource = factory.audioSource(with: audioConstraints)
-        localAudioTrack = factory.audioTrack(with: audioSource, trackId: "ARDAMS")
+        let audioConstraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        let audioSource = Self.factory.audioSource(with: audioConstraints)
+        localAudioTrack = Self.factory.audioTrack(with: audioSource, trackId: "audio0")
 
         // 视频
         if enableVideo {
@@ -57,7 +56,8 @@ final class WebRTCClient: NSObject {
     }
 
     private func configureAudioSession() {
-        let session = AVAudioSession.sharedInstance()
+        let session = RTCAudioSession.sharedInstance()
+        session.lockForConfiguration()
         do {
             try session.setCategory(.playAndRecord, mode: .voiceChat,
                                     options: [.allowBluetoothHFP, .defaultToSpeaker])
@@ -65,45 +65,51 @@ final class WebRTCClient: NSObject {
         } catch {
             print("[WebRTC] 配置音频会话失败: \(error)")
         }
+        session.unlockForConfiguration()
     }
 
     private func startVideoCapture() {
-        let videoSource = factory.videoSource()
-        let capturer = RTCCameraVideoCapturer(delegate: videoSource)
-        self.videoCapturer = capturer
+        let videoSource = Self.factory.videoSource()
 
-        // 选择前置摄像头
-        let position: AVCaptureDevice.Position = .front
-        guard let device = (AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera],
-            mediaType: .video,
-            position: position).devices.first) else {
+        #if targetEnvironment(simulator)
+        // 模拟器不支持真实摄像头，使用文件 capturer 占位
+        videoCapturer = RTCFileVideoCapturer(delegate: videoSource)
+        #else
+        videoCapturer = RTCCameraVideoCapturer(delegate: videoSource)
+        #endif
+
+        localVideoTrack = Self.factory.videoTrack(with: videoSource, trackId: "video0")
+
+        // 真机上启动摄像头采集
+        #if !targetEnvironment(simulator)
+        startCameraCapture()
+        #endif
+    }
+
+    private func startCameraCapture() {
+        guard let capturer = videoCapturer as? RTCCameraVideoCapturer else { return }
+
+        guard let device = (RTCCameraVideoCapturer.captureDevices().first { $0.position == .front }) else {
             print("[WebRTC] 未找到摄像头")
             return
         }
 
-        // 选最高支持格式中 FPS 合理的一档
         let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
-        let targetWidth = 640
-        let targetHeight = 480
-        guard let firstFormat = formats.first else {
+        // 选最高分辨率 + 最高帧率
+        guard let format = (formats.sorted { f1, f2 in
+            let w1 = CMVideoFormatDescriptionGetDimensions(f1.formatDescription).width
+            let w2 = CMVideoFormatDescriptionGetDimensions(f2.formatDescription).width
+            return w1 < w2
+        }).last else {
             print("[WebRTC] 摄像头不支持任何格式")
             return
         }
-        var selectedFormat: AVCaptureDevice.Format = firstFormat
-        var diff = Int.max
-        for format in formats {
-            let dimension = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            let localDiff = abs(targetWidth - Int(dimension.width)) + abs(targetHeight - Int(dimension.height))
-            if localDiff < diff {
-                diff = localDiff
-                selectedFormat = format
-            }
-        }
-        let fps = (selectedFormat.videoSupportedFrameRateRanges.first?.maxFrameRate ?? 30).rounded()
-        capturer.startCapture(with: device, format: selectedFormat, fps: Int(fps))
 
-        localVideoTrack = factory.videoTrack(with: videoSource, trackId: "ARDAMSv0")
+        guard let fps = (format.videoSupportedFrameRateRanges.sorted {
+            $0.maxFrameRate < $1.maxFrameRate
+        }.last) else { return }
+
+        capturer.startCapture(with: device, format: format, fps: Int(fps.maxFrameRate))
     }
 
     // MARK: - PeerConnection
@@ -114,23 +120,28 @@ final class WebRTCClient: NSObject {
             RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"]),
             RTCIceServer(urlStrings: ["stun:stun1.l.google.com:19302"])
         ]
+        config.sdpSemantics = .unifiedPlan
         config.continualGatheringPolicy = .gatherContinually
-        config.iceTransportPolicy = .all
 
-        let constraints = RTCMediaConstraints(mandatoryConstraints: [:], optionalConstraints: [:])
+        let constraints = RTCMediaConstraints(
+            mandatoryConstraints: nil,
+            optionalConstraints: ["DtlsSrtpKeyAgreement": kRTCMediaConstraintsValueTrue]
+        )
 
-        let pc = factory.peerConnection(with: config, constraints: constraints, delegate: self)
+        guard let pc = Self.factory.peerConnection(with: config, constraints: constraints, delegate: nil) else {
+            fatalError("无法创建 RTCPeerConnection")
+        }
+        pc.delegate = self
         self.peerConnection = pc
 
-        // 添加本地 track（通过 RTCMediaStream，stasel/WebRTC 不支持 addTransceiver）
-        let mediaStream = factory.mediaStream(withStreamId: "ARDAMS")
+        // 添加本地 track（M150 使用 add(_:streamIds:) 而非 RTCMediaStream）
+        let streamId = "ARDAMS"
         if let audio = localAudioTrack {
-            mediaStream.addAudioTrack(audio)
+            pc.add(audio, streamIds: [streamId])
         }
         if let video = localVideoTrack {
-            mediaStream.addVideoTrack(video)
+            pc.add(video, streamIds: [streamId])
         }
-        pc.add(mediaStream)
     }
 
     // MARK: - 协商
@@ -138,8 +149,8 @@ final class WebRTCClient: NSObject {
     func createOffer() {
         let constraints = RTCMediaConstraints(
             mandatoryConstraints: [
-                kRTCMediaConstraintsOfferToReceiveAudio: "true",
-                kRTCMediaConstraintsOfferToReceiveVideo: enableVideo ? "true" : "false"
+                kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue,
+                kRTCMediaConstraintsOfferToReceiveVideo: enableVideo ? kRTCMediaConstraintsValueTrue : kRTCMediaConstraintsValueFalse
             ],
             optionalConstraints: nil
         )
@@ -157,8 +168,8 @@ final class WebRTCClient: NSObject {
     func createAnswer() {
         let constraints = RTCMediaConstraints(
             mandatoryConstraints: [
-                kRTCMediaConstraintsOfferToReceiveAudio: "true",
-                kRTCMediaConstraintsOfferToReceiveVideo: enableVideo ? "true" : "false"
+                kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue,
+                kRTCMediaConstraintsOfferToReceiveVideo: enableVideo ? kRTCMediaConstraintsValueTrue : kRTCMediaConstraintsValueFalse
             ],
             optionalConstraints: nil
         )
@@ -193,25 +204,44 @@ final class WebRTCClient: NSObject {
 
     func toggleMute() -> Bool {
         isAudioEnabled.toggle()
-        localAudioTrack?.isEnabled = isAudioEnabled
+        setTrackEnabled(RTCAudioTrack.self, isEnabled: isAudioEnabled)
         return !isAudioEnabled
     }
 
     func toggleCamera() -> Bool {
         isVideoEnabled.toggle()
-        localVideoTrack?.isEnabled = isVideoEnabled
+        setTrackEnabled(RTCVideoTrack.self, isEnabled: isVideoEnabled)
         return isVideoEnabled
     }
 
     func switchCamera() {
-        (videoCapturer as? RTCCameraVideoCapturer)?.stopCapture()
-        // 简化处理：再次 start 用后置；这里仅占位，复杂切换留给后续优化
-        // MVP 阶段建议保持前置
+        guard let capturer = videoCapturer as? RTCCameraVideoCapturer else { return }
+        capturer.stopCapture()
+        // 简化：切到后置摄像头
+        guard let device = (RTCCameraVideoCapturer.captureDevices().first { $0.position == .back }) else { return }
+        let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
+        guard let format = (formats.sorted { f1, f2 in
+            let w1 = CMVideoFormatDescriptionGetDimensions(f1.formatDescription).width
+            let w2 = CMVideoFormatDescriptionGetDimensions(f2.formatDescription).width
+            return w1 < w2
+        }).last else { return }
+        guard let fps = (format.videoSupportedFrameRateRanges.sorted {
+            $0.maxFrameRate < $1.maxFrameRate
+        }.last) else { return }
+        capturer.startCapture(with: device, format: format, fps: Int(fps.maxFrameRate))
     }
 
     /// 把本地视频 track 绑到渲染视图
     func attachLocalVideo(to view: RTCMTLVideoView) {
         localVideoTrack?.add(view)
+    }
+
+    // MARK: - 辅助
+
+    private func setTrackEnabled<T: RTCMediaStreamTrack>(_ type: T.Type, isEnabled: Bool) {
+        peerConnection?.transceivers
+            .compactMap { $0.sender.track as? T }
+            .forEach { $0.isEnabled = isEnabled }
     }
 
     // MARK: - 释放
@@ -222,7 +252,6 @@ final class WebRTCClient: NSObject {
 }
 
 // MARK: - RTCPeerConnectionDelegate
-// 方法签名针对 stasel/WebRTC pod 最新版协议更新。
 extension WebRTCClient: RTCPeerConnectionDelegate {
 
     func peerConnection(_ peerConnection: RTCPeerConnection,
@@ -234,10 +263,12 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
     func peerConnection(_ peerConnection: RTCPeerConnection,
                         didRemove stream: RTCMediaStream) {}
 
+    func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
+
     func peerConnection(_ peerConnection: RTCPeerConnection,
                         didChange newState: RTCIceConnectionState) {
         switch newState {
-        case .connected: onIceConnected?()
+        case .connected, .completed: onIceConnected?()
         case .disconnected, .failed: onIceDisconnected?()
         default: break
         }
@@ -261,8 +292,6 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
 
     func peerConnection(_ peerConnection: RTCPeerConnection,
                         didOpen dataChannel: RTCDataChannel) {}
-
-    func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
 
     func peerConnection(_ peerConnection: RTCPeerConnection,
                         didAddReceiver rtpReceiver: RTCRtpReceiver,
