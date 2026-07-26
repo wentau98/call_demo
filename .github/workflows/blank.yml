@@ -24,10 +24,26 @@ jobs:
             -scheme VideoCall \
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 17' \
+            -derivedDataPath ./DerivedData \
             clean build
       
-      # 如果要导出真机 .ipa，需要 Apple Developer 证书
-      # 有了证书后取消下面注释，并添加 ExportOptions.plist
+      - name: Package .ipa (Simulator)
+        run: |
+          APP_PATH=$(find ./DerivedData -name "VideoCall.app" -type d | head -1)
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r VideoCall.ipa Payload
+          rm -rf Payload
+          echo "IPA created at: $(pwd)/VideoCall.ipa"
+          ls -lh VideoCall.ipa
+      
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoCall-Simulator.ipa
+          path: VideoCall.ipa
+      
+      # 如果要导出真机 .ipa，需要 Apple Developer 证书和 ExportOptions.plist
       # - name: Build & Archive (Device)
       #   run: |
       #     xcodebuild -workspace VideoCall.xcworkspace \
@@ -37,15 +53,15 @@ jobs:
       #       -archivePath ./build/VideoCall.xcarchive \
       #       archive
       #
-      # - name: Export .ipa
+      # - name: Export .ipa (Device)
       #   run: |
       #     xcodebuild -exportArchive \
       #       -archivePath ./build/VideoCall.xcarchive \
       #       -exportPath ./build/ \
       #       -exportOptionsPlist ExportOptions.plist
       #
-      # - name: Upload .ipa
+      # - name: Upload .ipa (Device)
       #   uses: actions/upload-artifact@v4
       #   with:
-      #     name: VideoCall.ipa
+      #     name: VideoCall-Device.ipa
       #     path: build/VideoCall.ipa
