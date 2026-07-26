@@ -1,0 +1,51 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install CocoaPods
+        run: |
+          gem install cocoapods
+          pod install
+      
+      - name: Build (Simulator)
+        run: |
+          xcodebuild -workspace VideoCall.xcworkspace \
+            -scheme VideoCall \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
+            clean build
+      
+      # 如果要导出真机 .ipa，需要 Apple Developer 证书
+      # 有了证书后取消下面注释，并添加 ExportOptions.plist
+      # - name: Build & Archive (Device)
+      #   run: |
+      #     xcodebuild -workspace VideoCall.xcworkspace \
+      #       -scheme VideoCall \
+      #       -sdk iphoneos \
+      #       -configuration Release \
+      #       -archivePath ./build/VideoCall.xcarchive \
+      #       archive
+      #
+      # - name: Export .ipa
+      #   run: |
+      #     xcodebuild -exportArchive \
+      #       -archivePath ./build/VideoCall.xcarchive \
+      #       -exportPath ./build/ \
+      #       -exportOptionsPlist ExportOptions.plist
+      #
+      # - name: Upload .ipa
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: VideoCall.ipa
+      #     path: build/VideoCall.ipa
