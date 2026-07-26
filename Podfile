@@ -5,9 +5,9 @@ platform :ios, '15.0'
 use_frameworks!
 
 target 'VideoCall' do
-  # stasel 维护的 WebRTC pod，兼容最新 Xcode
+  # stasel 维护的 WebRTC pod (XCFramework 版本，支持模拟器+真机)
   # https://github.com/stasel/WebRTC
-  pod 'WebRTC'
+  pod 'WebRTC-lib'
 end
 
 post_install do |installer|
