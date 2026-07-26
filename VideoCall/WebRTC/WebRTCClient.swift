@@ -35,12 +35,7 @@ final class WebRTCClient: NSObject {
             RTCInitializeSSL()
             WebRTCClient.isInitialized = true
         }
-        let videoEncoderFactory = RTCDefaultVideoEncoderFactory()
-        let videoDecoderFactory = RTCDefaultVideoDecoderFactory()
-        self.factory = RTCPeerConnectionFactory(
-            encoderFactory: videoEncoderFactory,
-            decoderFactory: videoDecoderFactory
-        )
+        self.factory = RTCPeerConnectionFactory()
         super.init()
     }
 
@@ -65,7 +60,7 @@ final class WebRTCClient: NSObject {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playAndRecord, mode: .voiceChat,
-                                    options: [.allowBluetooth, .defaultToSpeaker])
+                                    options: [.allowBluetoothHFP, .defaultToSpeaker])
             try session.setActive(true)
         } catch {
             print("[WebRTC] 配置音频会话失败: \(error)")
@@ -91,7 +86,11 @@ final class WebRTCClient: NSObject {
         let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
         let targetWidth = 640
         let targetHeight = 480
-        var selectedFormat: AVCaptureDevice.Format = formats.first ?? AVCaptureDevice.Format()
+        guard let firstFormat = formats.first else {
+            print("[WebRTC] 摄像头不支持任何格式")
+            return
+        }
+        var selectedFormat: AVCaptureDevice.Format = firstFormat
         var diff = Int.max
         for format in formats {
             let dimension = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
@@ -120,18 +119,15 @@ final class WebRTCClient: NSObject {
 
         let constraints = RTCMediaConstraints(mandatoryConstraints: [:], optionalConstraints: [:])
 
-        guard let pc = factory.peerConnection(with: config, constraints: constraints, delegate: self) else {
-            print("[WebRTC] 创建 PeerConnection 失败")
-            return
-        }
+        let pc = factory.peerConnection(with: config, constraints: constraints, delegate: self)
         self.peerConnection = pc
 
         // 添加本地 track
         if let audio = localAudioTrack {
-            pc.add(audio, streamIds: ["ARDAMS"])
+            pc.addTransceiver(with: audio)
         }
         if let video = localVideoTrack {
-            pc.add(video, streamIds: ["ARDAMS"])
+            pc.addTransceiver(with: video)
         }
     }
 
@@ -206,7 +202,7 @@ final class WebRTCClient: NSObject {
     }
 
     func switchCamera() {
-        (videoCapturer as? RTCCameraVideoCapturer)?.stopCapture {}
+        (videoCapturer as? RTCCameraVideoCapturer)?.stopCapture()
         // 简化处理：再次 start 用后置；这里仅占位，复杂切换留给后续优化
         // MVP 阶段建议保持前置
     }

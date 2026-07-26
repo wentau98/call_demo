@@ -217,7 +217,7 @@ struct CallView: View {
 
     private func setupLocalVideoView() {
         let view = RTCMTLVideoView()
-        view.shouldMirroring = true
+        view.transform = CGAffineTransform(scaleX: -1, y: 1)
         webRTC.client.attachLocalVideo(to: view)
         localVideoView = view
     }
