@@ -294,7 +294,7 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
                         didOpen dataChannel: RTCDataChannel) {}
 
     func peerConnection(_ peerConnection: RTCPeerConnection,
-                        didAddReceiver rtpReceiver: RTCRtpReceiver,
+                        didAdd rtpReceiver: RTCRtpReceiver,
                         streams mediaStreams: [RTCMediaStream]) {
         let track = rtpReceiver.track
         if let video = track as? RTCVideoTrack {
